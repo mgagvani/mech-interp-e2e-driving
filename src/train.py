@@ -1,0 +1,140 @@
+def _monkeypatch_pillow_version() -> None:
+    """Torchmetrics expects PIL.__version__; some Pillow builds only expose PILLOW_VERSION."""
+    try:
+        import PIL
+    except ImportError:
+        return
+    if hasattr(PIL, "__version__"):
+        return
+    version = getattr(PIL, "PILLOW_VERSION", None)
+    if version is None:
+        try:
+            from importlib.metadata import version as pkg_version
+
+            version = pkg_version("pillow")
+        except Exception:
+            version = "0.0.0"
+    PIL.__version__ = version
+
+
+_monkeypatch_pillow_version()
+
+import argparse
+from datetime import datetime
+
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.loggers import CSVLogger, WandbLogger
+from pytorch_lightning.profilers import SimpleProfiler
+
+import torch
+from pathlib import Path
+import os
+
+from loader import WaymoE2E
+from models.base_model import LitModel, collate_with_images
+from models.feature_extractors import SAMFeatures
+from models.monocular import DeepMonocularModel
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--data_dir", type=str, required=True, help="Path to data directory"
+    )
+    parser.add_argument(
+        "--batch_size", type=int, default=16, help="Batch size for training"
+    )
+    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
+    parser.add_argument(
+        "--max_epochs", type=int, default=10, help="Number of epochs to train"
+    )
+    parser.add_argument(
+        "--profile", action="store_true", help="Whether to run the profiler"
+    )
+    parser.add_argument(
+        "--train_items",
+        type=int,
+        default=250_000,
+        help="Number of training samples to use.",
+    )
+    parser.add_argument(
+        "--val_items",
+        type=int,
+        default=25_000,
+        help="Number of validation samples to use.",
+    )
+    args = parser.parse_args()
+
+    pl.seed_everything(42, workers=True)
+
+    # Model
+    out_dim = 20 * 2  # Future: (B, 20, 2)
+    feature_extractor = SAMFeatures(
+        model_name="timm/vit_pe_spatial_small_patch16_512.fb", frozen=True
+    )
+    model = DeepMonocularModel(feature_extractor=feature_extractor, out_dim=out_dim)
+    name = "deepmonocular"
+    lit_model = LitModel(model=model, lr=args.lr)
+
+    # Data
+    train_dataset = WaymoE2E(
+        indexFile="index_train.pkl", data_dir=args.data_dir, n_items=args.train_items
+    )
+    test_dataset = WaymoE2E(
+        indexFile="index_val.pkl", data_dir=args.data_dir, n_items=args.val_items
+    )
+    nw = 0
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        num_workers=nw,
+        collate_fn=collate_with_images,
+        persistent_workers=False,
+        pin_memory=False,
+    )
+    val_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=args.batch_size,
+        num_workers=nw,
+        collate_fn=collate_with_images,
+        persistent_workers=False,
+        pin_memory=False,
+    )
+
+    # We don't want to save logs or checkpoints in the home directory - it'll fill up fast
+    base_path = Path(args.data_dir).parent.as_posix()
+    sample_tag = f"n{args.train_items}"
+    timestamp = f"{name}_e2e_waymo_{sample_tag}_{datetime.now().strftime('%Y%m%d_%H%M')}"
+    wandb_logger = WandbLogger(
+        name=timestamp,
+        save_dir=base_path + "/logs",
+        project="robotvision",
+        log_model=True,
+    )
+    # One srun task per GPU (scripts/run_train_waymo*.slurm); Lightning joins them into one DDP group.
+    gpus_per_node = int(os.environ.get("SLURM_NTASKS_PER_NODE", 1))
+    torch.set_float32_matmul_precision("medium")
+    trainer = pl.Trainer(
+        max_epochs=args.max_epochs,
+        logger=[CSVLogger(base_path + "/logs", name=timestamp), wandb_logger],
+        devices=gpus_per_node,
+        num_nodes=int(os.environ.get("SLURM_NNODES", 1)),
+        strategy="ddp" if gpus_per_node > 1 else "auto",
+        precision="bf16-mixed" if torch.cuda.is_bf16_supported() else 16,
+        log_every_n_steps=10,
+        profiler=SimpleProfiler(extended=True) if args.profile else None,
+        callbacks=[
+            ModelCheckpoint(
+                monitor="val_loss",
+                mode="min",
+                save_top_k=1,
+                dirpath=base_path + "/checkpoints",
+                filename=f"camera-e2e-{name}-waymo-{sample_tag}-{{epoch:02d}}-{{val_loss:.2f}}",
+            ),
+        ],
+    )
+
+    if trainer.is_global_zero:
+        wandb_logger.watch(lit_model, log="all")
+    trainer.fit(lit_model, train_loader, val_loader)

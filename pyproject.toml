@@ -1,0 +1,33 @@
+[project]
+name = "smts"
+version = "1.0.0"
+description = "Mechanistic Interpretability for End-to-End Self-Driving: SMTS planner, sparse autoencoders, and analyses"
+authors = [{name = "Manav Gagvani", email = "mgagvani@purdue.edu"}]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "torch>=2.6",
+    "torchvision",
+    "pytorch-lightning>=2.4",
+    "timm>=1.0",
+    "transformers>=4.45",
+    "numpy",
+    "pillow",
+    "protobuf",
+    "tqdm",
+    "wandb",
+    "huggingface-hub",
+]
+
+[project.optional-dependencies]
+# Only needed by analyze_sae_visual_gen.py (stage 1 of the counterfactual
+# image-edit pipeline): object detection, VLM prompt generation, and the
+# diffusion image editor. Stage 2 (analyze_sae_visual_gen_pt2.py) and every
+# other script run without these.
+visual-edits = [
+    "diffusers>=0.37.1",
+    "openai>=1.0",
+    "python-dotenv",
+    "ultralytics>=8.3",
+    "vllm",
+]

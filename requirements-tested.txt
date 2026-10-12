@@ -18,4 +18,4 @@ huggingface-hub==1.12.2
 openai==2.6.1
 python-dotenv==1.2.2
 ultralytics==8.4.43
-vllm==0.20.1
+vllm==0.30.0

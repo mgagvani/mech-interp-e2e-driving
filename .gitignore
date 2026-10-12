@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.ipynb_checkpoints/
+
+# Job logs and run outputs
+slurm-*.out
+log/
+lightning_logs/
+wandb/
+*_out/
+*_out[0-9]*/
+
+# Checkpoints and token caches live outside the repo, except the paper SAEs.
+*.ckpt
+*.pt
+!sae_checkpoints/*.pt
+sae_run_root

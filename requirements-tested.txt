@@ -9,7 +9,7 @@ transformers==5.6.0
 numpy==2.4.6
 pandas==3.0.2
 matplotlib==3.10.9
-pillow==12.2.0
+pillow==13.0.0
 protobuf==6.33.6
 tqdm==4.67.3
 wandb==0.26.1
